@@ -1,5 +1,3 @@
-// Minimal key-value store over IndexedDB. Shared by the page (app.js) and
-// the service worker (sw.js) so both sides see the same watchlist and API key.
 const DB_NAME = "watchlist-db";
 const STORE = "kv";
 

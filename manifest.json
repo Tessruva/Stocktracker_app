@@ -1,7 +1,7 @@
 {
   "name": "Watchlist",
   "short_name": "Watchlist",
-  "description": "Track entry zones and stop-losses for up to 10 stocks",
+  "description": "Track entry zones and stop-losses for up to 20 stocks, with 3-model AI consensus analysis",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",

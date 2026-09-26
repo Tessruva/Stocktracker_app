@@ -1,23 +1,15 @@
-const MAX_STOCKS = 10;
+const MAX_STOCKS = 20;
 let config = null;
-let editingIndex = null; // index into config.stocks while the add panel is used to edit
+let editingIndex = null;
 let pollTimer = null;
 
 const el = (id) => document.getElementById(id);
 
 // ---------- persistence ----------
 
-async function load() {
-  config = await getConfig();
-}
-
-async function save() {
-  await setConfig(config);
-}
-
-function backendReady() {
-  return Boolean(config.backendUrl && config.accessToken);
-}
+async function load() { config = await getConfig(); }
+async function save() { await setConfig(config); }
+function backendReady() { return Boolean(config.backendUrl && config.accessToken); }
 
 async function api(path, options = {}) {
   const res = await fetch(`${config.backendUrl.replace(/\/$/, "")}${path}`, {
@@ -53,12 +45,8 @@ async function enablePush() {
       el("pushStatus").textContent = "Notifications permission was not granted — background alerts won't work.";
       return;
     }
-    const { publicKey } = await api("/vapid-public-key", { method: "GET" }).catch(async () => {
-      // vapid-public-key has no auth requirement server-side, but our api() helper
-      // always sends an auth header, which is harmless — the server ignores it here.
-      const res = await fetch(`${config.backendUrl.replace(/\/$/, "")}/vapid-public-key`);
-      return res.json();
-    });
+    const res = await fetch(`${config.backendUrl.replace(/\/$/, "")}/vapid-public-key`);
+    const { publicKey } = await res.json();
     if (!publicKey) {
       el("pushStatus").textContent = "Server has no VAPID key configured yet — background alerts are off until it does.";
       return;
@@ -78,7 +66,7 @@ async function enablePush() {
   }
 }
 
-// ---------- foreground alerts (beep/vibrate/local notification) ----------
+// ---------- foreground alerts ----------
 
 function beep() {
   try {
@@ -93,7 +81,7 @@ function beep() {
       osc.start(ctx.currentTime + t);
       osc.stop(ctx.currentTime + t + 0.15);
     });
-  } catch (e) { /* audio not available */ }
+  } catch (e) {}
 }
 
 function alertUser(title, body) {
@@ -108,7 +96,7 @@ function alertUser(title, body) {
   }
 }
 
-// ---------- quotes (via backend, which holds the Finnhub key) ----------
+// ---------- quotes ----------
 
 async function fetchQuote(symbol) {
   return api(`/api/quote?symbol=${encodeURIComponent(symbol)}`, { method: "GET" });
@@ -116,6 +104,7 @@ async function fetchQuote(symbol) {
 
 function statusFor(stock, price) {
   if (price <= stock.stopLoss) return "stopped";
+  if (stock.takeProfit && price >= stock.takeProfit) return "target";
   if (price >= stock.entryLow && price <= stock.entryHigh) return "entry";
   return "watching";
 }
@@ -136,11 +125,19 @@ async function checkAll() {
       delete stock.error;
 
       if (status !== "watching" && status !== prevStatus) {
-        const msg =
-          status === "stopped"
-            ? `${stock.symbol} hit your stop-loss of $${stock.stopLoss.toFixed(2)} — now $${price.toFixed(2)}`
-            : `${stock.symbol} entered your buy zone ($${stock.entryLow.toFixed(2)}–$${stock.entryHigh.toFixed(2)}) — now $${price.toFixed(2)}`;
-        alertUser(status === "stopped" ? "Stop-loss hit" : "Entry zone reached", msg);
+        let msg;
+        let title;
+        if (status === "stopped") {
+          title = "Stop-loss hit";
+          msg = `${stock.symbol} hit your stop-loss of $${stock.stopLoss.toFixed(2)} — now $${price.toFixed(2)}`;
+        } else if (status === "target") {
+          title = "Take-profit reached";
+          msg = `${stock.symbol} reached your take-profit of $${stock.takeProfit.toFixed(2)} — now $${price.toFixed(2)}`;
+        } else {
+          title = "Entry zone reached";
+          msg = `${stock.symbol} entered your buy zone ($${stock.entryLow.toFixed(2)}–$${stock.entryHigh.toFixed(2)}) — now $${price.toFixed(2)}`;
+        }
+        alertUser(title, msg);
       }
       stock.lastState = status;
     } catch (err) {
@@ -157,7 +154,7 @@ async function syncWatchlistToServer() {
   if (!backendReady()) return;
   try {
     await api("/api/watchlist", { method: "PUT", body: JSON.stringify({ stocks: config.stocks }) });
-  } catch (e) { /* will retry on next change; foreground checks still work either way */ }
+  } catch (e) {}
 }
 
 // ---------- rendering: watchlist ----------
@@ -169,7 +166,7 @@ function fmt(n) {
 function rangeBar(stock) {
   const p = stock.lastPrice ?? stock.entryHigh;
   let low = Math.min(stock.stopLoss, stock.entryLow, p);
-  let high = Math.max(stock.entryHigh, p);
+  let high = Math.max(stock.entryHigh, stock.takeProfit || stock.entryHigh, p);
   const pad = (high - low) * 0.2 || 1;
   low -= pad;
   high += pad;
@@ -177,25 +174,31 @@ function rangeBar(stock) {
   const pct = (v) => ((v - low) / span) * 100;
 
   const status = stock.status || "watching";
-  const markerClass = status === "entry" ? "in-entry" : status === "stopped" ? "past-stop" : "";
+  const markerClass = status === "entry" ? "in-entry" : status === "stopped" ? "past-stop" : status === "target" ? "in-entry" : "";
+
+  const takeProfitMark = stock.takeProfit
+    ? `<div class="stopline" style="left:${pct(stock.takeProfit)}%; background:var(--green)"></div>`
+    : "";
 
   return `
     <div class="range">
       <div class="zone" style="left:${pct(stock.entryLow)}%; width:${pct(stock.entryHigh) - pct(stock.entryLow)}%"></div>
       <div class="stopline" style="left:${pct(stock.stopLoss)}%"></div>
+      ${takeProfitMark}
       <div class="marker ${markerClass}" style="left:${pct(p)}%"></div>
     </div>`;
 }
 
 function statusLabel(status) {
   if (status === "stopped") return "Stop-loss hit";
+  if (status === "target") return "Take-profit reached";
   if (status === "entry") return "In entry zone";
   return "Watching";
 }
 
 function card(stock, index) {
   const status = stock.status || "watching";
-  const dotClass = status === "entry" ? "entry" : status === "stopped" ? "stopped" : "watching";
+  const dotClass = status === "entry" || status === "target" ? "entry" : status === "stopped" ? "stopped" : "watching";
   const change = stock.lastChange;
   const deltaClass = change > 0 ? "up" : change < 0 ? "down" : "";
   const deltaText = change !== undefined && change !== null ? `${change > 0 ? "+" : ""}${fmt(change)}` : "";
@@ -211,6 +214,7 @@ function card(stock, index) {
       <div class="levels">
         <span>stop $${fmt(stock.stopLoss)}</span>
         <span>entry $${fmt(stock.entryLow)}–$${fmt(stock.entryHigh)}</span>
+        <span>target ${stock.takeProfit ? "$" + fmt(stock.takeProfit) : "—"}</span>
       </div>
       <div class="foot">
         <span class="ts">${stock.error ? stock.error : stock.lastChecked ? new Date(stock.lastChecked).toLocaleTimeString() : "not checked yet"}</span>
@@ -250,12 +254,8 @@ function renderList() {
   empty.classList.add("hidden");
   list.innerHTML = config.stocks.map(card).join("");
 
-  list.querySelectorAll("[data-edit]").forEach((b) =>
-    b.addEventListener("click", () => startEdit(Number(b.dataset.edit)))
-  );
-  list.querySelectorAll("[data-remove]").forEach((b) =>
-    b.addEventListener("click", () => removeStock(Number(b.dataset.remove)))
-  );
+  list.querySelectorAll("[data-edit]").forEach((b) => b.addEventListener("click", () => startEdit(Number(b.dataset.edit))));
+  list.querySelectorAll("[data-remove]").forEach((b) => b.addEventListener("click", () => removeStock(Number(b.dataset.remove))));
 }
 
 function renderSettings() {
@@ -278,6 +278,8 @@ function closeAddPanel() {
   el("entryLowInput").value = "";
   el("entryHighInput").value = "";
   el("stopLossInput").value = "";
+  const tp = el("takeProfitInput");
+  if (tp) tp.value = "";
 }
 
 function startEdit(index) {
@@ -287,6 +289,8 @@ function startEdit(index) {
   el("entryLowInput").value = s.entryLow;
   el("entryHighInput").value = s.entryHigh;
   el("stopLossInput").value = s.stopLoss;
+  const tp = el("takeProfitInput");
+  if (tp) tp.value = s.takeProfit || "";
   openAddPanel();
 }
 
@@ -302,6 +306,8 @@ async function handleAddStock() {
   const entryLow = parseFloat(el("entryLowInput").value);
   const entryHigh = parseFloat(el("entryHighInput").value);
   const stopLoss = parseFloat(el("stopLossInput").value);
+  const takeProfitRaw = el("takeProfitInput") ? el("takeProfitInput").value : "";
+  const takeProfit = takeProfitRaw ? parseFloat(takeProfitRaw) : null;
 
   if (!symbol || Number.isNaN(entryLow) || Number.isNaN(entryHigh) || Number.isNaN(stopLoss)) {
     alert("Fill in a symbol, entry low, entry high, and stop-loss.");
@@ -311,8 +317,12 @@ async function handleAddStock() {
     alert("Stop-loss should be below your entry range.");
     return;
   }
+  if (takeProfit !== null && takeProfit <= entryHigh) {
+    alert("Take-profit should be above your entry range.");
+    return;
+  }
 
-  const entry = { symbol, entryLow, entryHigh, stopLoss, lastState: "watching" };
+  const entry = { symbol, entryLow, entryHigh, stopLoss, takeProfit, lastState: "watching" };
 
   if (editingIndex !== null) {
     config.stocks[editingIndex] = { ...config.stocks[editingIndex], ...entry };
@@ -351,7 +361,7 @@ async function handleSaveSettings() {
   }
 }
 
-// ---------- AI analysis ----------
+// ---------- AI analysis (3-model consensus) ----------
 
 function verdictClass(v) {
   const s = (v || "").toLowerCase();
@@ -360,12 +370,18 @@ function verdictClass(v) {
   return "hold";
 }
 
+function modelChip(m) {
+  if (m.error) return `<span class="model-chip mv-error">${m.name}: n/a</span>`;
+  return `<span class="model-chip mv-${verdictClass(m.verdict)}">${m.name}: <span class="mv">${m.verdict}</span></span>`;
+}
+
 function renderAnalysis(data) {
   const box = el("analyzeResult");
   if (data.error) {
     box.innerHTML = `<div class="analysis"><p class="error">${data.error}</p></div>`;
     return;
   }
+  const modelsRow = (data.models || []).map(modelChip).join("");
   box.innerHTML = `
     <div class="analysis">
       <div class="a-head">
@@ -375,31 +391,15 @@ function renderAnalysis(data) {
         </div>
         <span class="verdict ${verdictClass(data.verdict)}">${data.verdict || "—"}</span>
       </div>
+      <div class="agreement">${data.agreement ? `Consensus: ${data.agreement} models agree` : ""}</div>
+      <div class="model-breakdown">${modelsRow}</div>
       <div class="grid2">
-        <div class="stat">
-          <div class="label">Volatility</div>
-          <div class="value">${data.volatility?.rating || "—"}</div>
-        </div>
-        <div class="stat">
-          <div class="label">Measure</div>
-          <div class="value" style="font-size:0.78rem">${data.volatility?.measure || "—"}</div>
-        </div>
-        <div class="stat">
-          <div class="label">Entry zone</div>
-          <div class="value">$${fmt(data.entryZone?.low)}–$${fmt(data.entryZone?.high)}</div>
-        </div>
-        <div class="stat">
-          <div class="label">Exit target</div>
-          <div class="value">$${fmt(data.exitTarget)}</div>
-        </div>
-        <div class="stat">
-          <div class="label">Stop-loss</div>
-          <div class="value">$${fmt(data.stopLoss)}</div>
-        </div>
-        <div class="stat">
-          <div class="label">As of</div>
-          <div class="value" style="font-size:0.72rem">${new Date(data.asOf).toLocaleTimeString()}</div>
-        </div>
+        <div class="stat"><div class="label">Volatility</div><div class="value">${data.volatility?.rating || "—"}</div></div>
+        <div class="stat"><div class="label">Measure</div><div class="value" style="font-size:0.78rem">${data.volatility?.measure || "—"}</div></div>
+        <div class="stat"><div class="label">Entry zone</div><div class="value">$${fmt(data.entryZone?.low)}–$${fmt(data.entryZone?.high)}</div></div>
+        <div class="stat"><div class="label">Take-profit</div><div class="value">$${fmt(data.exitTarget)}</div></div>
+        <div class="stat"><div class="label">Stop-loss</div><div class="value">$${fmt(data.stopLoss)}</div></div>
+        <div class="stat"><div class="label">As of</div><div class="value" style="font-size:0.72rem">${new Date(data.asOf).toLocaleTimeString()}</div></div>
       </div>
       <p class="rationale">${data.rationale || ""}</p>
       <p class="disclaimer">${data.disclaimer || "AI-generated — not financial advice."}</p>
@@ -414,6 +414,8 @@ function renderAnalysis(data) {
       el("entryLowInput").value = data.entryZone?.low ?? "";
       el("entryHighInput").value = data.entryZone?.high ?? "";
       el("stopLossInput").value = data.stopLoss ?? "";
+      const tp = el("takeProfitInput");
+      if (tp) tp.value = data.exitTarget ?? "";
     });
   }
 }
@@ -426,7 +428,7 @@ async function handleAnalyze() {
     return;
   }
   el("analyzeBtn").disabled = true;
-  el("analyzeResult").innerHTML = `<div class="analysis"><p class="help">Analyzing ${symbol}…</p></div>`;
+  el("analyzeResult").innerHTML = `<div class="analysis"><p class="help">Asking Claude, ChatGPT, and Gemini about ${symbol}…</p></div>`;
   try {
     const data = await api("/api/analyze", { method: "POST", body: JSON.stringify({ symbol }) });
     renderAnalysis(data);
@@ -466,8 +468,23 @@ async function init() {
   if (backendReady() && config.stocks.length) checkAll();
   if (backendReady()) enablePush();
 
+  // Fix for "doesn't update unless I refresh": Android suspends the JS timer
+  // when the tab/app is backgrounded, so the on-screen prices go stale. The
+  // moment you switch back to the app, check immediately instead of waiting
+  // for the next poll interval to happen to land.
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) checkAll();
+  });
+  window.addEventListener("focus", () => checkAll());
+
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("sw.js").catch(() => {});
+    // When a background push arrives (server-side alert), the service worker
+    // tells any open tab to refresh its data immediately too, so you see the
+    // new price/status the instant the alert fires, not just the notification.
+    navigator.serviceWorker.addEventListener("message", (event) => {
+      if (event.data && event.data.type === "REFRESH") checkAll();
+    });
   }
 }
 

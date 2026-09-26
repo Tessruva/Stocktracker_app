@@ -30,9 +30,7 @@
     <label for="pollSeconds">Foreground check interval (seconds)</label>
     <input id="pollSeconds" type="number" min="30" step="10" value="60" />
     <p class="help">
-      This app needs a small free backend for reliable background alerts and AI
-      analysis — see the README in this project for step-by-step setup
-      (Render + Upstash + Finnhub + Anthropic, all free tier).
+      See the README for setup (Render + Upstash + Finnhub + Claude/ChatGPT/Gemini, all free or low-cost tiers).
     </p>
     <button class="btn primary" id="saveSettings">Save &amp; enable notifications</button>
     <div class="help" id="pushStatus"></div>
@@ -56,11 +54,13 @@
         <input id="stopLossInput" type="number" step="0.01" placeholder="0.00" />
       </div>
     </div>
+    <label for="takeProfitInput">Take-profit (optional)</label>
+    <input id="takeProfitInput" type="number" step="0.01" placeholder="0.00" />
     <button class="btn primary" id="addStock">Add to watchlist</button>
   </section>
 
   <section class="panel" id="analyzePanel">
-    <h2>Quick analysis</h2>
+    <h2>Quick analysis <span class="badge-sub">3-model consensus</span></h2>
     <label for="analyzeSym">Ticker symbol</label>
     <div class="row3" style="grid-template-columns: 1fr auto;">
       <input id="analyzeSym" type="text" placeholder="e.g. NVDA" autocomplete="off" style="text-transform:uppercase" />
